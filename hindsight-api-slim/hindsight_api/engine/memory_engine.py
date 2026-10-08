@@ -603,6 +603,7 @@ if TYPE_CHECKING:
     from hindsight_api.config_resolver import ValidatedBankConfigUpdate
     from hindsight_api.extensions import (
         BankReadOperation,
+        BankTransferOperation,
         BankWriteOperation,
         MemoryCurationAction,
         OperationValidatorExtension,
@@ -3197,6 +3198,40 @@ class MemoryEngine(MemoryEngineInterface):
             raise OperationValidationError(result.reason or "Operation not allowed", result.status_code)
         return result
 
+    async def _authorize_bank_transfer(
+        self,
+        bank_id: str,
+        operation: "BankTransferOperation",
+        request_context: "RequestContext",
+        *,
+        source_bank_id: str,
+        target_bank_id: str | None = None,
+        scope: "TransferScope | None" = None,
+        document_ids: list[str] | None = None,
+    ) -> None:
+        """Authenticate and admit a transfer before its native effects.
+
+        Internal work is deliberately not exempt: the source/destination
+        policy may have changed while an already-authenticated task waited.
+        """
+        from hindsight_api.extensions import BankTransferContext
+
+        await self._authenticate_tenant(request_context)
+        if self._operation_validator is not None:
+            await self._validate_operation(
+                self._operation_validator.validate_bank_transfer(
+                    BankTransferContext(
+                        bank_id=bank_id,
+                        operation=operation,
+                        request_context=request_context,
+                        source_bank_id=source_bank_id,
+                        target_bank_id=target_bank_id,
+                        scope=scope,
+                        document_ids=list(document_ids) if document_ids is not None else None,
+                    )
+                )
+            )
+
     async def _tag_scope(self, bank_id: str, request_context: "RequestContext | None") -> list[TagGroup] | None:
         """The tag groups the operation validator confines this caller to, or None.
 
@@ -3643,6 +3678,23 @@ class MemoryEngine(MemoryEngineInterface):
         if not bank_id:
             raise ValueError("bank_id is required for export_documents task")
 
+        from hindsight_api.extensions import BankTransferOperation
+        from hindsight_api.models import RequestContext
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.EXPORT_DOCUMENTS,
+            RequestContext(
+                internal=True,
+                user_initiated=True,
+                tenant_id=task_dict.get("_tenant_id"),
+                api_key_id=task_dict.get("_api_key_id"),
+                retry_count=task_dict.get("_retry_count", 0),
+            ),
+            source_bank_id=bank_id,
+            document_ids=document_ids,
+        )
+
         from .memories import get_memories
         from .transfer import stream_export_documents
 
@@ -3707,6 +3759,23 @@ class MemoryEngine(MemoryEngineInterface):
             data=task_dict.get("include_data", True),
             bank_config=task_dict.get("include_bank_config", True),
             history=task_dict.get("include_history", False),
+        )
+
+        from hindsight_api.extensions import BankTransferOperation
+        from hindsight_api.models import RequestContext
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.EXPORT_BANK,
+            RequestContext(
+                internal=True,
+                user_initiated=True,
+                tenant_id=task_dict.get("_tenant_id"),
+                api_key_id=task_dict.get("_api_key_id"),
+                retry_count=task_dict.get("_retry_count", 0),
+            ),
+            source_bank_id=bank_id,
+            scope=scope,
         )
 
         # Note on snapshot consistency vs. connection hold trade-off:
@@ -3863,6 +3932,16 @@ class MemoryEngine(MemoryEngineInterface):
             retry_count=task_dict.get("_retry_count", 0),
         )
 
+        from hindsight_api.extensions import BankTransferOperation
+
+        await self._authorize_bank_transfer(
+            source_bank_id,
+            BankTransferOperation.CLONE_BANK,
+            context,
+            source_bank_id=source_bank_id,
+            target_bank_id=target_bank_id,
+            scope=scope,
+        )
         backend = await self._get_backend()
         # One transaction for the whole read: a bank is assembled from a dozen
         # queries, and without this the clone is a smear of whatever was being
@@ -7647,9 +7726,18 @@ class MemoryEngine(MemoryEngineInterface):
         When ``include_observations`` is set, consolidated observations are also
         exported (and restored on import) instead of being regenerated.
         """
+        from hindsight_api.extensions import BankTransferOperation
+
         from .memories import get_memories
         from .transfer import export_documents
 
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.EXPORT_DOCUMENTS,
+            request_context,
+            source_bank_id=bank_id,
+            document_ids=document_ids,
+        )
         await self._get_backend()
         # The store decides whether this bank's memories are in SQL at all: the loaders read
         # `memory_units` directly, and for a store-owned bank that table is empty, which used to
@@ -7690,6 +7778,15 @@ class MemoryEngine(MemoryEngineInterface):
 
         await self._authenticate_tenant(request_context)
         await self._refuse_bank_wide_if_scoped(bank_id, request_context, "export documents")
+        from hindsight_api.extensions import BankTransferOperation
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.EXPORT_DOCUMENTS,
+            request_context,
+            source_bank_id=bank_id,
+            document_ids=document_ids,
+        )
         await self._get_backend()
 
         task_payload: dict[str, Any] = {
@@ -7729,6 +7826,15 @@ class MemoryEngine(MemoryEngineInterface):
         scope = scope or TransferScope()
         await self._authenticate_tenant(request_context)
         await self._refuse_bank_wide_if_scoped(bank_id, request_context, "export the bank")
+        from hindsight_api.extensions import BankTransferOperation
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.EXPORT_BANK,
+            request_context,
+            source_bank_id=bank_id,
+            scope=scope,
+        )
         await self._get_backend()
 
         task_payload: dict[str, Any] = {
@@ -7776,6 +7882,16 @@ class MemoryEngine(MemoryEngineInterface):
 
         await self._authenticate_tenant(request_context)
         await self._refuse_bank_wide_if_scoped(bank_id, request_context, "import into the bank")
+        from hindsight_api.extensions import BankTransferOperation
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.IMPORT_BANK,
+            request_context,
+            source_bank_id=parsed.manifest.source_bank_id,
+            target_bank_id=target,
+            scope=scope,
+        )
         backend = await self._get_backend()
         if await bank_utils.get_bank_profile_if_exists(backend, target) is not None:
             raise ValueError(
@@ -7845,6 +7961,16 @@ class MemoryEngine(MemoryEngineInterface):
 
         await self._authenticate_tenant(request_context)
         await self._refuse_bank_wide_if_scoped(bank_id, request_context, "clone the bank")
+        from hindsight_api.extensions import BankTransferOperation
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.CLONE_BANK,
+            request_context,
+            source_bank_id=bank_id,
+            target_bank_id=target_bank_id,
+            scope=scope,
+        )
         backend = await self._get_backend()
         if await bank_utils.get_bank_profile_if_exists(backend, target_bank_id) is not None:
             raise ValueError(
@@ -7901,6 +8027,9 @@ class MemoryEngine(MemoryEngineInterface):
         profile = await self.get_bank_profile(bank_id, request_context=request_context)
         if profile is None:
             return None
+        from hindsight_api.extensions import BankReadOperation
+
+        await self._authorize_bank_read(bank_id, BankReadOperation.RETRIEVE_BANK_FILE_STREAM, request_context)
         # The key must sit under this bank in the caller's own tenant: object
         # stores share one bucket across tenants, so authorizing the bank id alone
         # would let a same-named bank in another tenant read this one's files.
@@ -8514,11 +8643,22 @@ class MemoryEngine(MemoryEngineInterface):
         from .transfer.importer import parse_bank_archive
 
         await self._authenticate_tenant(request_context)
-        backend = await self._get_backend()
         # Parse up front so a bad archive fails fast and we can resolve the
         # target bank's config before the restore.
         parsed = parse_bank_archive(archive_bytes)
         bank_id = target_bank_id or parsed.manifest.source_bank_id
+
+        from hindsight_api.extensions import BankTransferOperation
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.IMPORT_BANK,
+            request_context,
+            source_bank_id=parsed.manifest.source_bank_id,
+            target_bank_id=bank_id,
+            scope=scope or parsed.scope,
+        )
+        backend = await self._get_backend()
 
         on_bank_created = None
         if operation_id:
@@ -8600,9 +8740,19 @@ class MemoryEngine(MemoryEngineInterface):
             raise ValueError(f"Invalid on_conflict '{on_conflict}'; expected skip|replace|new-id")
         # Validate synchronously so a malformed/unsupported archive surfaces as an
         # immediate error to the caller rather than a background task failure.
-        parse_archive(archive_bytes)
+        parsed = parse_archive(archive_bytes)
 
         await self._authenticate_tenant(request_context)
+        from hindsight_api.extensions import BankTransferOperation
+
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.IMPORT_DOCUMENTS,
+            request_context,
+            source_bank_id=parsed.manifest.source_bank_id,
+            target_bank_id=bank_id,
+            document_ids=[document.id for document in parsed.documents],
+        )
         # Gate every import, not just one that creates the bank: _ensure_bank_exists only
         # runs validate_create_bank for a missing bank, so an import into an existing bank
         # used to reach no validator hook at all (#5137).
@@ -8663,8 +8813,20 @@ class MemoryEngine(MemoryEngineInterface):
           * graph maintenance (replace/new-id imports cascade-delete old data and
             enqueue relink work).
         """
-        from .transfer import import_documents
+        from hindsight_api.extensions import BankTransferOperation
 
+        from .transfer import import_documents
+        from .transfer.importer import parse_archive
+
+        parsed = parse_archive(archive_bytes)
+        await self._authorize_bank_transfer(
+            bank_id,
+            BankTransferOperation.IMPORT_DOCUMENTS,
+            request_context,
+            source_bank_id=parsed.manifest.source_bank_id,
+            target_bank_id=bank_id,
+            document_ids=[document.id for document in parsed.documents],
+        )
         backend = await self._get_backend()
         # Imports insert across many per-document transactions, so the bank is
         # created up front on its own connection rather than coupled to a write.

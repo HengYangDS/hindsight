@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from hindsight_api.engine.response_models import RecallResult as RecallResultModel
     from hindsight_api.engine.response_models import ReflectResult
     from hindsight_api.engine.search.tags import TagGroup, TagsMatch
+    from hindsight_api.engine.transfer import TransferScope
     from hindsight_api.models import RequestContext
 
 
@@ -392,6 +393,7 @@ class BankReadOperation(StrEnum):
     LIST_TAGS = "list_tags"
     LIST_WEBHOOK_DELIVERIES = "list_webhook_deliveries"
     LIST_WEBHOOKS = "list_webhooks"
+    RETRIEVE_BANK_FILE_STREAM = "retrieve_bank_file_stream"
     SEARCH_KNOWLEDGE_BASE = "search_knowledge_base"
 
 
@@ -478,6 +480,35 @@ class CreateBankContext:
 
     bank_id: str
     request_context: "RequestContext"
+
+
+class BankTransferOperation(StrEnum):
+    """Native archive/clone operation names passed to transfer admission."""
+
+    CLONE_BANK = "clone_bank"
+    EXPORT_BANK = "export_bank"
+    EXPORT_DOCUMENTS = "export_documents"
+    IMPORT_BANK = "import_bank"
+    IMPORT_DOCUMENTS = "import_documents"
+
+
+@dataclass
+class BankTransferContext:
+    """Transfer identities and scope before queue, archive or restore effects.
+
+    ``bank_id`` is the request/operation's anchor. An import's source identity
+    comes from its parsed archive and is not the destination or a tenant claim.
+    Worker execution invokes this hook again with the retained caller identity,
+    so an extension can revoke a transfer after submission.
+    """
+
+    bank_id: str
+    operation: BankTransferOperation
+    request_context: "RequestContext"
+    source_bank_id: str
+    target_bank_id: str | None
+    scope: "TransferScope | None"
+    document_ids: list[str] | None = None
 
 
 @dataclass
@@ -1172,6 +1203,16 @@ class OperationValidatorExtension(Extension, ABC):
 
         Returns:
             ValidationResult indicating whether the bank may be created.
+        """
+        return ValidationResult.accept()
+
+    async def validate_bank_transfer(self, ctx: BankTransferContext) -> ValidationResult:
+        """Validate native exports, imports and clones independently of config.
+
+        Runs before submission and again before worker effects, including
+        internal retries. Defaults to accepting existing transfer behavior.
+        A policy can inspect the original archive source and destination
+        without imposing a tag scope on unrelated bank configuration reads.
         """
         return ValidationResult.accept()
 

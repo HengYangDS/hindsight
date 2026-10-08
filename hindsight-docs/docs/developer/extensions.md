@@ -44,6 +44,7 @@ For other multi-tenant setups with separate schemas per tenant (e.g., custom JWT
 Adds custom HTTP endpoints under the `/ext/` path prefix. Useful for adding domain-specific APIs that integrate with Hindsight's memory engine.
 
 Provides two router methods:
+
 - `get_router(memory)` — returns a FastAPI router mounted at `/ext/`
 - `get_root_router(memory)` — returns a FastAPI router mounted at the application root (for well-known endpoints or other paths that must be at specific locations). Returns `None` by default.
 
@@ -58,6 +59,7 @@ HINDSIGHT_API_HTTP_EXTENSION=mypackage.ext:MyHttpExtension
 ### OperationValidatorExtension
 
 Hooks into retain/recall/reflect operations for validation and monitoring. Use cases include:
+
 - Rate limiting and quota enforcement
 - Permission checks and content filtering
 - Audit logging and usage tracking
@@ -103,10 +105,12 @@ HINDSIGHT_API_<TYPE>_SOME_CONFIG=value
 ```
 
 All extensions support lifecycle hooks:
+
 - `on_startup()` - Called when the application starts
 - `on_shutdown()` - Called when the application shuts down
 
 Extensions have access to an `ExtensionContext` that provides:
+
 - `run_migration(schema)` - Run database migrations for a schema
 - `get_memory_engine()` - Get the MemoryEngine interface
 
@@ -178,7 +182,7 @@ raise AuthenticationError(
 
 ### Reading additional request headers
 
-`RequestContext` carries the `Authorization` header as `api_key`. To authenticate on a *different* header — for instance when a gateway terminates auth with one shared identity and forwards the per-caller identity separately — name the headers you want forwarded:
+`RequestContext` carries the `Authorization` header as `api_key`. To authenticate on a _different_ header — for instance when a gateway terminates auth with one shared identity and forwards the per-caller identity separately — name the headers you want forwarded:
 
 ```bash
 HINDSIGHT_API_EXTENSION_PASSTHROUGH_HEADERS=x-user-assertion
@@ -200,7 +204,7 @@ This works on both the HTTP and MCP transports, and the same `RequestContext` is
 
 Only headers you list are forwarded, and only when present on the request. The variable is unset by default, so extensions see no header data unless you opt in.
 
-A header sent **more than once** is not forwarded at all, and a warning is logged. There is no safe way to choose between the copies — a proxy may append its trusted value either before or after a client-supplied one — so an extension reading it sees nothing and fails the request, rather than silently accepting a value that may be spoofed. Make sure your proxy *replaces* the identity header it injects instead of appending to it.
+A header sent **more than once** is not forwarded at all, and a warning is logged. There is no safe way to choose between the copies — a proxy may append its trusted value either before or after a client-supplied one — so an extension reading it sees nothing and fails the request, rather than silently accepting a value that may be spoofed. Make sure your proxy _replaces_ the identity header it injects instead of appending to it.
 
 :::caution Deferred operations
 `extra_headers` describes the request being served. Operations that run later — a queued retain, a scheduled consolidation, a mental-model refresh — are executed by a background worker with no request behind them, so their `RequestContext` carries no headers. Authorize on the header at request time; do not rely on it inside work that continues after the response.
@@ -288,6 +292,30 @@ chunked transfer encoding). Use it for cheap size-aware quota or cost guards;
 the full `validate_*` hooks still run after parsing and should enforce precise
 per-operation limits.
 
+#### Bank transfer admission
+
+`validate_bank_transfer(ctx: BankTransferContext)` separately admits document
+exports/imports and whole-bank exports/imports/clones. It defaults to accepting
+the transfer, so an existing validator keeps its behavior. Ordinary bank config
+reads and writes still use their existing hooks and do not require a tag scope.
+
+The context identifies the operation, its request/queue anchor (`bank_id`), the
+original source bank, the destination (when present), the whole-bank transfer
+scope (or `None` for document transfers) and the document IDs for a document
+import or selected export. An import's source
+comes from the parsed archive, not the receiving bank. The hook runs before
+submission/storage and again when a worker executes or retries the transfer,
+using that operation's native request context. Rejection therefore can stop a
+queued transfer when deployment policy changes. The hook does not make an
+archive's claimed source cryptographically trusted or provide per-document
+commit-time revocation by itself.
+
+Stored archive downloads use `validate_bank_read` with
+`BankReadOperation.RETRIEVE_BANK_FILE_STREAM`, independently of ordinary bank
+profile/config reads. This lets a deployment withhold an already-created archive
+without removing access to bank configuration. A signed external object-store
+URL, once issued, remains governed by that store's expiration/revocation policy.
+
 #### Memory curation hooks
 
 Curating a memory (`PATCH /v1/default/banks/{bank_id}/memories/{memory_id}`:
@@ -339,7 +367,7 @@ caller can narrow its view but never widen it:
 - **Source text follows the document.** A memory can be visible through its own
   tags (say, a `kind:rule` fact extracted from someone's private note) while the
   note is not. Its chunk and document text are only returned when the
-  *document's* tags pass the filter. This applies to every tag-filtered recall
+  _document's_ tags pass the filter. This applies to every tag-filtered recall
   and reflect, with or without an extension.
 - **Mental models and knowledge pages** created or updated by a scoped caller
   must carry tags inside the scope (`403` otherwise — the caller could not see

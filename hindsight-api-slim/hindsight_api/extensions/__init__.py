@@ -43,6 +43,8 @@ from hindsight_api.extensions.operation_validator import (
     BankListScope,
     BankReadContext,
     BankReadOperation,
+    BankTransferContext,
+    BankTransferOperation,
     BankWriteContext,
     BankWriteOperation,
     # Consolidation operation
@@ -116,6 +118,8 @@ __all__ = [
     "BankListScope",
     "BankReadContext",
     "BankReadOperation",
+    "BankTransferContext",
+    "BankTransferOperation",
     "BankWriteContext",
     "BankWriteOperation",
     "TagScopeContext",

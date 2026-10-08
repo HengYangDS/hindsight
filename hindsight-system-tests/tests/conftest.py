@@ -105,6 +105,22 @@ def scoped_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iter
 
 
 @pytest.fixture(scope="session")
+def transfer_policy_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
+    """A native server with transfer-only policy, never a test-side wrapper."""
+    log_path = tmp_path_factory.mktemp("transfer-policy-server") / "server.log"
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=log_path,
+        extra_env={
+            "HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION": "transfer_validator:TransferPolicy",
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "server_extensions"),
+        },
+    )
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
 def retrying_server(stub_server, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     """A server that will actually re-ask the extraction model once.
 
