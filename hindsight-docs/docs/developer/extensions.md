@@ -292,6 +292,36 @@ chunked transfer encoding). Use it for cheap size-aware quota or cost guards;
 the full `validate_*` hooks still run after parsing and should enforce precise
 per-operation limits.
 
+#### Read-result admission
+
+`validate_bank_read_result(ctx: BankReadResultContext)` is an optional,
+fail-closed check after a read is assembled, before the engine returns it. It
+defaults to `ValidationResult.accept()`, preserving existing deployments.
+Unlike `on_*_complete`, rejection and ordinary exceptions propagate to the
+caller. Completion hooks remain best-effort telemetry and are not permission
+or source-withdrawal gates.
+
+The immutable context identifies `bank_id`, the native `BankReadOperation`,
+the original `request_context`, the unchanged `result`, and a `phase` of
+`"result"` or `"stream_chunk"`. Treat the result as read-only: accept or reject,
+never mutate it to filter content. A pre-read hook may capture a permission or
+source revision on its request context; the result hook rechecks that revision.
+Keep per-request state on that context, not on the shared extension instance.
+
+The hook currently covers original-document get, mental-model get/list/history, knowledge-page get,
+attachment metadata/bytes and bank-file downloads. Model/page/list admission
+runs after observational completion callbacks and rejects the complete
+assembled response, not only the last list item. File downloads additionally
+check each next storage chunk before yielding it and close the original
+iterator on refusal, cancellation or explicit `aclose()`.
+
+This is an engine handoff boundary, not an atomic database-to-network delivery
+or a browser-cache revocation mechanism. Already delivered bytes cannot be
+retracted; if withdrawal is detected after HTTP headers or chunks have been
+sent, the stream fails rather than rewriting an already-started response.
+Remaining read families and post-serialization HTTP/attachment delivery require
+their own qualification before claiming deployment-wide withdrawal protection.
+
 #### Bank transfer admission
 
 `validate_bank_transfer(ctx: BankTransferContext)` separately admits document

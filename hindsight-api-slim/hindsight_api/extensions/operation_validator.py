@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from hindsight_api.extensions.base import Extension
 
@@ -377,8 +377,11 @@ class BankReadOperation(StrEnum):
     GET_KNOWLEDGE_PAGE = "get_knowledge_page"
     GET_MEMORIES_TIMESERIES = "get_memories_timeseries"
     GET_MEMORY_UNIT = "get_memory_unit"
+    GET_MENTAL_MODEL = "get_mental_model"
     GET_MENTAL_MODEL_HISTORY = "get_mental_model_history"
     GET_OBSERVATION_HISTORY = "get_observation_history"
+    RETRIEVE_BANK_ATTACHMENT = "retrieve_bank_attachment"
+    RESOLVE_ATTACHMENTS = "resolve_attachments"
     GET_OPERATION_STATUS = "get_operation_status"
     LIST_BANK_ALIASES = "list_bank_aliases"
     LIST_DIRECTIVES = "list_directives"
@@ -455,6 +458,22 @@ class BankReadContext:
     tags: list[str] | None = None
     tags_match: "TagsMatch" = "any"
     tag_groups: "list[TagGroup] | None" = None
+
+
+@dataclass(frozen=True)
+class BankReadResultContext:
+    """A bank-scoped read assembled for delivery, not a completion event.
+
+    ``result`` is the original native projection or the next file byte chunk.
+    Extensions must treat it as read-only and reject rather than rewrite it.
+    Request-local state belongs on ``request_context``, never the extension.
+    """
+
+    bank_id: str
+    operation: BankReadOperation
+    request_context: "RequestContext"
+    result: Any
+    phase: Literal["result", "stream_chunk"] = "result"
 
 
 @dataclass
@@ -1164,6 +1183,18 @@ class OperationValidatorExtension(Extension, ABC):
 
         Returns:
             ValidationResult indicating whether the operation is allowed.
+        """
+        return ValidationResult.accept()
+
+    async def validate_bank_read_result(self, ctx: BankReadResultContext) -> ValidationResult:
+        """Admit a native read result immediately before it is handed back.
+
+        Default accepts, preserving existing deployments. Override to recheck
+        permissions or a source generation captured by the pre-read hook.
+        Rejection and ordinary exceptions propagate: this is admission, not
+        best-effort telemetry. For a stored-file stream, the hook also runs on
+        each next byte chunk before yielding it. It cannot retract bytes that
+        were already delivered and does not provide atomic DB/HTTP delivery.
         """
         return ValidationResult.accept()
 

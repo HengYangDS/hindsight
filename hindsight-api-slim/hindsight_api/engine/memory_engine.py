@@ -779,6 +779,36 @@ class BankFileStream:
     size: int | None
 
 
+class _AdmittedBankFileStream:
+    """Revalidate the next native chunk and close its original storage owner."""
+
+    def __init__(self, stream: AsyncIterator[bytes], admit: Callable[[bytes], Awaitable[bytes]]) -> None:
+        self._stream = stream
+        self._admit = admit
+        self._closed = False
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            chunk = await anext(self._stream)
+            await self._admit(chunk)
+            return chunk
+        except BaseException:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        if not self._closed:
+            self._closed = True
+            close = getattr(self._stream, "aclose", None)
+            if close is not None:
+                await close()
+
+
 @dataclass
 class ByteStreamCounter:
     """Async iterator that counts total bytes yielded by the wrapped byte stream."""
@@ -3265,6 +3295,32 @@ class MemoryEngine(MemoryEngineInterface):
         ctx = BankReadContext(bank_id=bank_id, operation=operation, request_context=request_context)
         await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
         return await self._tag_scope(bank_id, request_context)
+
+    async def _admit_bank_read_result(
+        self,
+        bank_id: str,
+        operation: "BankReadOperation",
+        result: _R,
+        request_context: "RequestContext",
+        *,
+        phase: Literal["result", "stream_chunk"] = "result",
+    ) -> _R:
+        """Keep result admission separate from non-fatal completion hooks."""
+        if self._operation_validator is not None:
+            from hindsight_api.extensions import BankReadResultContext
+
+            await self._validate_operation(
+                self._operation_validator.validate_bank_read_result(
+                    BankReadResultContext(
+                        bank_id=bank_id,
+                        operation=operation,
+                        request_context=request_context,
+                        result=result,
+                        phase=phase,
+                    )
+                )
+            )
+        return result
 
     async def _memory_in_tag_scope(
         self, conn: Any, bank_id: str, unit_id: str, tag_scope: list[TagGroup] | None
@@ -8040,7 +8096,25 @@ class MemoryEngine(MemoryEngineInterface):
         if not await self._file_storage.exists(storage_key):
             return None
         size = await self._file_storage.get_size(storage_key)
-        return BankFileStream(stream=self._file_storage.retrieve_stream(storage_key), size=size)
+        stream = self._file_storage.retrieve_stream(storage_key)
+        if self._operation_validator is not None:
+
+            async def admit_chunk(chunk: bytes) -> bytes:
+                return await self._admit_bank_read_result(
+                    bank_id, BankReadOperation.RETRIEVE_BANK_FILE_STREAM, chunk, request_context, phase="stream_chunk"
+                )
+
+            stream = _AdmittedBankFileStream(stream, admit_chunk)
+        result = BankFileStream(stream=stream, size=size)
+        try:
+            return await self._admit_bank_read_result(
+                bank_id, BankReadOperation.RETRIEVE_BANK_FILE_STREAM, result, request_context
+            )
+        except BaseException:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                await close()
+            raise
 
     async def _retain_attachment_info(
         self,
@@ -8150,7 +8224,12 @@ class MemoryEngine(MemoryEngineInterface):
             return {}
         backend = await self._get_backend()
         async with backend.acquire() as conn:
-            return await load_bank_attachments(conn, bank_id, attachment_ids)
+            result = await load_bank_attachments(conn, bank_id, attachment_ids)
+        from hindsight_api.extensions import BankReadOperation
+
+        return await self._admit_bank_read_result(
+            bank_id, BankReadOperation.RESOLVE_ATTACHMENTS, result, request_context
+        )
 
     async def attachments_for_documents(
         self,
@@ -8388,12 +8467,17 @@ class MemoryEngine(MemoryEngineInterface):
         from .retain.attachment_content import LoadedAttachment
 
         try:
-            return LoadedAttachment(
+            result = LoadedAttachment(
                 media_type=record.media_type,
                 data=await self._file_storage.retrieve(record.storage_key),
             )
         except FileNotFoundError:
             return None
+        from hindsight_api.extensions import BankReadOperation
+
+        return await self._admit_bank_read_result(
+            bank_id, BankReadOperation.RETRIEVE_BANK_ATTACHMENT, result, request_context
+        )
 
     async def _reclaim_orphaned_attachments(self, conn, bank_id: str, storage_keys: "Sequence[str]") -> None:
         """Delete the blobs behind ``storage_keys`` that no attachment row names any more.
@@ -10901,7 +10985,9 @@ class MemoryEngine(MemoryEngineInterface):
             # one has no such key, so its payload is unchanged.
             if "attachment_filenames" in doc:
                 result["attachment_filenames"] = doc["attachment_filenames"]
-            return result
+        # The result hook may read the current policy generation. Release the
+        # native connection before admitting delivery so a one-slot pool works.
+        return await self._admit_bank_read_result(bank_id, BankReadOperation.GET_DOCUMENT, result, request_context)
 
     async def delete_document(
         self,
@@ -16796,7 +16882,12 @@ class MemoryEngine(MemoryEngineInterface):
         if not _nested_operation_authorized.get():
             await self._record_mental_model_list_read(bank_id, items, request_context=request_context)
 
-        return MentalModelPage(items=items, total=int(total or 0))
+        return await self._admit_bank_read_result(
+            bank_id,
+            BankReadOperation.LIST_MENTAL_MODELS,
+            MentalModelPage(items=items, total=int(total or 0)),
+            request_context,
+        )
 
     async def get_mental_model(
         self,
@@ -16852,7 +16943,9 @@ class MemoryEngine(MemoryEngineInterface):
                 bank_id, mental_model_id, result.get("content"), request_context=request_context
             )
 
-        return result
+        from hindsight_api.extensions import BankReadOperation
+
+        return await self._admit_bank_read_result(bank_id, BankReadOperation.GET_MENTAL_MODEL, result, request_context)
 
     async def get_mental_model_history(
         self,
@@ -16930,7 +17023,11 @@ class MemoryEngine(MemoryEngineInterface):
                     entry["failure_reason"] = content.get("failure_reason")
                     entry["error_message"] = content.get("error_message")
                 result.append(entry)
-            return result
+        from hindsight_api.extensions import BankReadOperation
+
+        return await self._admit_bank_read_result(
+            bank_id, BankReadOperation.GET_MENTAL_MODEL_HISTORY, result, request_context
+        )
 
     async def _mental_model_embedding_vector(self, name: str, content: str) -> list[float] | None:
         """The page embedding as a vector. Over name + content, matching what BM25 indexes."""
@@ -19706,7 +19803,9 @@ class MemoryEngine(MemoryEngineInterface):
             await self._record_mental_model_read(
                 bank_id, mental_model_id, node.get("content"), request_context=request_context
             )
-        return node
+        from hindsight_api.extensions import BankReadOperation
+
+        return await self._admit_bank_read_result(bank_id, BankReadOperation.GET_KNOWLEDGE_PAGE, node, request_context)
 
     async def search_knowledge_pages(
         self,

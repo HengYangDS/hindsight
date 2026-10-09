@@ -19,8 +19,10 @@ import pytest
 from hindsight_client import Hindsight
 
 from hindsight_system_tests import (
+    HindsightServer,
     LLMStub,
     Stubs,
+    StubServer,
     start_hindsight_server,
     start_stub_server,
     wait_until_settled,
@@ -113,6 +115,24 @@ def transfer_policy_server(stub_server, tmp_path_factory: pytest.TempPathFactory
         log_path=log_path,
         extra_env={
             "HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION": "transfer_validator:TransferPolicy",
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "server_extensions"),
+        },
+    )
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
+def read_result_policy_server(
+    stub_server: StubServer, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[HindsightServer]:
+    """A native result validator; no test-side engine or HTTP replacement."""
+    log_path = tmp_path_factory.mktemp("read-result-policy-server") / "server.log"
+    server = start_hindsight_server(
+        stub_url=stub_server.url,
+        log_path=log_path,
+        extra_env={
+            "HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION": "read_result_validator:ReadResultPolicy",
             "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "server_extensions"),
         },
     )
