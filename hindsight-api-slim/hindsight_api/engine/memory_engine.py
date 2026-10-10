@@ -671,6 +671,7 @@ from .reflect.retractions import (
 )
 from .reflect.structured_doc import StructuredDocument
 from .reflect.tools import (
+    expanded_memory_facts,
     tool_expand,
     tool_read_mental_models,
     tool_recall,
@@ -2094,6 +2095,9 @@ def _count_retrieved_facts(tool_trace: list[ToolCallTrace]) -> dict[str, int]:
         if tc.tool == "recall":
             for memory in output.get("memories") or []:
                 _tally(memory.get("fact_type", "world"), memory.get("id"))
+        elif tc.tool == "expand":
+            for fact in expanded_memory_facts(output):
+                _tally(fact.fact_type, fact.id)
         elif tc.tool == "search_observations":
             for obs in output.get("observations") or []:
                 _tally("observation", obs.get("id"))
@@ -15639,6 +15643,13 @@ class MemoryEngine(MemoryEngineInterface):
                                         occurred_end=memory_data.get("occurred_end"),
                                     )
                                 )
+                elif tc.tool == "expand":
+                    for fact in expanded_memory_facts(tc.output):
+                        if fact.id in seen_memory_ids or (used_memory_ids_set and fact.id not in used_memory_ids_set):
+                            continue
+                        if fact.fact_type in based_on:
+                            seen_memory_ids.add(fact.id)
+                            based_on[fact.fact_type].append(fact)
                 elif tc.tool == "search_observations" and "observations" in tc.output:
                     for obs_data in tc.output["observations"]:
                         obs_id = obs_data.get("id")

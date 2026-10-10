@@ -6,7 +6,27 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ..response_models import MemoryFact
 from .structured_doc import StructuredDocument
+
+
+class ExpandedMemoryFact(MemoryFact):
+    """The expansion tool spells a raw fact's type as ``type``."""
+
+    fact_type: str = Field(default="world", validation_alias="type")
+
+
+class ExpandedMemoryResult(BaseModel):
+    """Only a returned fact is evidence; a requested or refused selector is not."""
+
+    memory: ExpandedMemoryFact | None = None
+    error: str | None = None
+
+
+class ExpandToolResult(BaseModel):
+    """The evidence-bearing subset of a serialized expansion result."""
+
+    results: list[ExpandedMemoryResult] = Field(default_factory=list)
 
 
 class ObservationSection(BaseModel):

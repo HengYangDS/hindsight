@@ -15,8 +15,10 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from ..prompt_utils import truncate_context_for_prompt
+from ..response_models import MemoryFact
 from ..search.tags import TagGroup, TagsMatch, tags_satisfy_groups
 from ..source_scope import ids_passing, tag_filter_is_active, visible_document_ids
+from .models import ExpandToolResult
 from .tokenization import count_prompt_tokens
 
 if TYPE_CHECKING:
@@ -67,6 +69,17 @@ _SNIPPET_CHARS = 280
 #: empty bag, so a bank that stamps nothing sends nothing, and a bank that stamps
 #: a lot pays for what it chose to stamp.
 _UNREAD_RESULT_FIELDS = ("scores", "chunk_id", "document_id")
+
+
+def expanded_memory_facts(output: Any) -> list[MemoryFact]:
+    """Normalize raw facts an expansion actually returned, not its requested IDs.
+
+    A visible fact remains evidence when its original source is withheld. Source
+    pointers are hydrated by the existing stored-evidence reader, not inferred
+    from a requested selector or the absence of a chunk.
+    """
+    result = ExpandToolResult.model_validate(output)
+    return [item.memory for item in result.results if not item.error and item.memory is not None]
 
 
 def _drop_unread_fields(d: dict[str, Any]) -> dict[str, Any]:
