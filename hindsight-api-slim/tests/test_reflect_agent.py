@@ -3054,6 +3054,72 @@ class TestReflectDropsUnseenIds:
         assert result.text == f"Failed. Source: {self.REAL}, [unverified id]"
 
 
+class TestReflectCitesExpandedFacts:
+    """A fact the model read through ``expand`` is as citable as a recalled one (#5474).
+
+    Only recall used to register citable ids, so ``done`` dropped a citation of a fact
+    that ``expand`` alone had returned. An id ``expand`` was asked for but did not
+    return (malformed, missing, outside the reader's filter) stays uncitable.
+    """
+
+    RECALLED = "7f62514b-d718-4a26-a55c-66f0801a7bf7"
+    EXPANDED = "4e6bcbdd-861a-48fc-9047-aeb887e01a92"
+    MISSING = "3cdb5972-fb10-48e7-8b24-b43b405ea1b2"
+
+    @pytest.mark.asyncio
+    async def test_done_keeps_an_expanded_citation_and_drops_an_id_expand_did_not_return(self, mock_functions):
+        functions = {
+            **mock_functions,
+            "recall_fn": AsyncMock(return_value={"memories": [{"id": self.RECALLED, "text": "A recalled fact."}]}),
+            "expand_fn": AsyncMock(
+                return_value={
+                    "results": [
+                        {
+                            "memory_id": self.EXPANDED,
+                            "memory": {"id": self.EXPANDED, "text": "An expanded fact.", "type": "experience"},
+                        },
+                        {"memory_id": self.MISSING, "error": f"Memory not found: {self.MISSING}"},
+                    ],
+                    "count": 2,
+                }
+            ),
+        }
+        llm = MagicMock()
+        llm.call_with_tools = AsyncMock(
+            side_effect=[
+                LLMToolCallResult(
+                    tool_calls=[LLMToolCall(id="0", name="recall", arguments={"query": "q"})],
+                    finish_reason="tool_calls",
+                ),
+                LLMToolCallResult(
+                    tool_calls=[
+                        LLMToolCall(
+                            id="1",
+                            name="expand",
+                            arguments={"memory_ids": [self.EXPANDED, self.MISSING], "depth": "chunk"},
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                ),
+                _done({"answer": "A", "memory_ids": [self.RECALLED, self.EXPANDED, self.MISSING]}),
+            ]
+        )
+
+        result = await run_reflect_agent(
+            llm_config=llm,
+            bank_id="b",
+            query="q",
+            bank_profile={"name": "T", "mission": "M"},
+            has_mental_models=False,
+            include_observations=False,
+            max_iterations=5,
+            **functions,
+        )
+
+        assert result.used_memory_ids == [self.RECALLED, self.EXPANDED]
+        functions["expand_fn"].assert_awaited_once()
+
+
 class TestReflectFinishesThroughDone:
     """A model that stops with prose is asked for ``done`` in the same conversation.
 

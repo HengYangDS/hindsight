@@ -51,6 +51,7 @@ from .structured_doc import (
     render_document,
 )
 from .tokenization import count_prompt_tokens
+from .tools import expanded_memory_facts
 from .tools_schema import get_reflect_tools
 
 #: Bounds on any token argument the model supplies to a retrieval tool. Below the
@@ -1658,6 +1659,12 @@ async def _run_reflect_agent_inner(
                     for memory in output["memories"]:
                         if "id" in memory:
                             available_memory_ids.add(memory["id"])
+                if normalized_tool_name == "expand" and isinstance(output, dict):
+                    # A fact read through expand is as citable as a recalled one. Only recall
+                    # registered ids here before, so `done` silently dropped a citation of a
+                    # fact the agent had reached through expand alone, and an answer left with
+                    # no valid citation fell back to every recalled fact as its evidence (#5474).
+                    available_memory_ids.update(fact.id for fact in expanded_memory_facts(output))
 
                 # Record the serialized result; emitted in original order below. The
                 # model reads the presented form (see presentation.py); the trace

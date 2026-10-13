@@ -671,6 +671,7 @@ from .reflect.retractions import (
 )
 from .reflect.structured_doc import StructuredDocument
 from .reflect.tools import (
+    expanded_memory_facts,
     tool_expand,
     tool_read_mental_models,
     tool_recall,
@@ -2101,6 +2102,12 @@ def _count_retrieved_facts(tool_trace: list[ToolCallTrace]) -> dict[str, int]:
         if tc.tool == "recall":
             for memory in output.get("memories") or []:
                 _tally(memory.get("fact_type", "world"), memory.get("id"))
+        elif tc.tool == "expand":
+            # Retrieved as surely as a recalled fact, and citable like one (#5474): without
+            # this a refresh whose evidence came through expand reports using more facts
+            # than it retrieved. A fact recall also returned is still counted once.
+            for fact in expanded_memory_facts(output):
+                _tally(fact.fact_type, fact.id)
         elif tc.tool == "search_observations":
             for obs in output.get("observations") or []:
                 _tally("observation", obs.get("id"))
@@ -15685,6 +15692,17 @@ class MemoryEngine(MemoryEngineInterface):
                                         occurred_end=memory_data.get("occurred_end"),
                                     )
                                 )
+                elif tc.tool == "expand":
+                    # A fact the agent read through expand backs the answer like a recalled
+                    # one. Reading only recall here dropped a cited fact that expand alone had
+                    # returned (#5474). Same used-id rule as recall; the stored provenance is
+                    # filled in below by _evidence_as_stored.
+                    for fact in expanded_memory_facts(tc.output):
+                        if fact.id in seen_memory_ids or (used_memory_ids_set and fact.id not in used_memory_ids_set):
+                            continue
+                        seen_memory_ids.add(fact.id)
+                        if fact.fact_type in based_on:
+                            based_on[fact.fact_type].append(fact)
                 elif tc.tool == "search_observations" and "observations" in tc.output:
                     for obs_data in tc.output["observations"]:
                         obs_id = obs_data.get("id")

@@ -15,8 +15,10 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from ..prompt_utils import truncate_context_for_prompt
+from ..response_models import MemoryFact
 from ..search.tags import TagGroup, TagsMatch, tags_satisfy_groups
 from ..source_scope import ids_passing, tag_filter_is_active, visible_document_ids
+from .models import ExpandToolResult
 from .tokenization import count_prompt_tokens
 
 if TYPE_CHECKING:
@@ -67,6 +69,20 @@ _SNIPPET_CHARS = 280
 #: empty bag, so a bank that stamps nothing sends nothing, and a bank that stamps
 #: a lot pays for what it chose to stamp.
 _UNREAD_RESULT_FIELDS = ("scores", "chunk_id", "document_id")
+
+
+def expanded_memory_facts(output: Any) -> list[MemoryFact]:
+    """The raw facts an ``expand`` call actually returned, as citable evidence (#5474).
+
+    The agent reads these in full, so a fact it reached only through ``expand`` (an
+    observation's source fact, say) backs an answer exactly like a recalled one. A
+    requested id that came back as an error -- malformed, missing, or outside the
+    reader's tag filter -- was never read and is not evidence. A visible fact whose
+    source document is withheld still counts: the fact itself was read, and its
+    document and chunk ids are filled in later from the stored memory, not from here.
+    """
+    result = ExpandToolResult.model_validate(output)
+    return [item.memory for item in result.results if not item.error and item.memory is not None]
 
 
 def _drop_unread_fields(d: dict[str, Any]) -> dict[str, Any]:

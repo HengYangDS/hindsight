@@ -6,7 +6,27 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ..response_models import MemoryFact
 from .structured_doc import StructuredDocument
+
+
+class ExpandedMemoryFact(MemoryFact):
+    """A raw fact as the ``expand`` tool returns it: the tool names its fact type ``type``."""
+
+    fact_type: str = Field(default="world", validation_alias="type")
+
+
+class ExpandedMemoryResult(BaseModel):
+    """One requested id in an ``expand`` result: the fact when it was read, the error when not."""
+
+    memory: ExpandedMemoryFact | None = None
+    error: str | None = None
+
+
+class ExpandToolResult(BaseModel):
+    """The part of a serialized ``expand`` result that can back a citation (#5474)."""
+
+    results: list[ExpandedMemoryResult] = Field(default_factory=list)
 
 
 class ObservationSection(BaseModel):
